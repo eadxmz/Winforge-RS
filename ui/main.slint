@@ -1,0 +1,267 @@
+import { Button, VerticalBox, HorizontalBox, LineEdit, CheckBox, ComboBox, ScrollView, ProgressIndicator, TabWidget } from "std-widgets.slint";
+
+export struct UiDriverItem {
+    inf_name: string,
+    provider: string,
+    class_name: string,
+    version: string,
+    date: string,
+    origin: string,
+    selected: bool,
+}
+
+export struct UiAppItem {
+    id: string,
+    name: string,
+    category: string,
+    selected: bool,
+}
+
+export component MainWindow inherits Window {
+    title: "WinForge-RS — Windows 10 / 11 / LTSC ISO & Driver Slipstreamer";
+    width: 1020px;
+    height: 700px;
+    background: #12141a;
+    default-font-size: 13px;
+
+    // State Properties
+    in-out property <string> iso_path: "C:\\ISOs\\Win11_24H2_LTSC.iso";
+    in-out property <string> output_iso_path: "C:\\ISOs\\WinForge_Custom.iso";
+    in-out property <[string]> edition_list: ["Index 1: Windows 11 Enterprise LTSC (Build 26100)", "Index 2: Windows 11 IoT Enterprise LTSC (Build 26100)"];
+    in-out property <int> selected_edition_idx: 0;
+
+    in-out property <[UiDriverItem]> drivers: [];
+    in-out property <[UiAppItem]> apps: [];
+
+    // Unattend & Tweak Properties
+    in-out property <string> username: "Abaan";
+    in-out property <string> password: "";
+    in-out property <string> hostname: "WINFORGE-PC";
+    in-out property <bool> ultimate_perf: true;
+    in-out property <bool> strip_telemetry: true;
+    in-out property <bool> strip_onedrive: true;
+    in-out property <bool> strip_edge: false;
+    in-out property <string> ctt_config_path: "";
+    in-out property <string> winhance_config_path: "";
+
+    // Build Progress
+    in-out property <float> build_progress: 0.0;
+    in-out property <string> status_text: "Ready. Select a Windows 10, 11, or LTSC ISO to begin.";
+    in-out property <bool> is_building: false;
+
+    // Callbacks into Rust
+    callback scan_iso(string);
+    callback scan_host_drivers();
+    callback override_driver_inf(string);
+    callback toggle_driver(int, bool);
+    callback toggle_app(int, bool);
+    callback start_build();
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 12px;
+
+        // Header Banner
+        Rectangle {
+            height: 54px;
+            background: #1c2029;
+            border-radius: 6px;
+            HorizontalBox {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+                Text {
+                    text: "WINFORGE-RS // DECLARATIVE ISO & DRIVER ENGINE";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: #61afef;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Supports Win 10 • Win 11 • Enterprise LTSC • IoT LTSC";
+                    color: #8b949e;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // 5-Step Tabbed Studio
+        TabWidget {
+            Tab {
+                title: "1. ISO & Edition";
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    Text { text: "Source Windows ISO File (Win 10 / Win 11 / LTSC):"; color: #e6edf3; font-weight: 600; }
+                    HorizontalBox {
+                        spacing: 10px;
+                        LineEdit { text <=> root.iso_path; placeholder-text: "Path to .iso file..."; }
+                        Button {
+                            text: "Inspect WIM / ESD Editions";
+                            clicked => { root.scan_iso(root.iso_path); }
+                        }
+                    }
+
+                    Text { text: "Detected WIM / ESD Image Indices:"; color: #e6edf3; font-weight: 600; }
+                    ComboBox {
+                        model: root.edition_list;
+                        current-index <=> root.selected_edition_idx;
+                    }
+
+                    Text { text: "Output Custom ISO Path:"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.output_iso_path; }
+                }
+            }
+
+            Tab {
+                title: "2. Driver Studio (Host & Custom Swap)";
+                VerticalBox {
+                    padding: 12px;
+                    spacing: 10px;
+
+                    HorizontalBox {
+                        spacing: 10px;
+                        Button {
+                            text: "Harvest Installed Host Drivers";
+                            clicked => { root.scan_host_drivers(); }
+                        }
+                        LineEdit {
+                            id: custom-inf-input;
+                            placeholder-text: "Path to custom/older/newer .inf file (e.g., D:\\Drivers\\AMD\\C038492.inf)...";
+                        }
+                        Button {
+                            text: "Override / Add Driver (.inf)";
+                            clicked => { root.override_driver_inf(custom-inf-input.text); }
+                        }
+                    }
+
+                    Text {
+                        text: "Tip: Adding a custom .inf automatically unchecks any conflicting host driver sharing the same PCI/USB Hardware ID or Display vendor.";
+                        color: #8b949e;
+                        font-size: 12px;
+                    }
+
+                    ScrollView {
+                        VerticalBox {
+                            spacing: 6px;
+                            for drv[idx] in root.drivers : Rectangle {
+                                height: 42px;
+                                background: drv.origin == "Custom Override" ? #1f3328 : #1c2029;
+                                border-radius: 4px;
+                                HorizontalBox {
+                                    padding: 8px;
+                                    spacing: 12px;
+                                    CheckBox {
+                                        checked: drv.selected;
+                                        toggled => { root.toggle_driver(idx, self.checked); }
+                                    }
+                                    Text { text: drv.class_name; width: 90px; color: #61afef; font-weight: 600; vertical-alignment: center; }
+                                    Text { text: drv.provider; width: 200px; color: #e6edf3; vertical-alignment: center; }
+                                    Text { text: drv.inf_name; width: 130px; color: #8b949e; vertical-alignment: center; }
+                                    Text { text: "v" + drv.version + " (" + drv.date + ")"; width: 190px; color: #98c379; vertical-alignment: center; }
+                                    Text { text: "[" + drv.origin + "]"; color: drv.origin == "Custom Override" ? #e5c07b : #8b949e; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "3. Offline App Bundler";
+                VerticalBox {
+                    padding: 12px;
+                    spacing: 10px;
+
+                    Text {
+                        text: "Selected apps are downloaded via Winget at build time and packaged inside sources\\$OEM$ for 100% offline installation (Works on LTSC!).";
+                        color: #8b949e;
+                    }
+
+                    ScrollView {
+                        VerticalBox {
+                            spacing: 6px;
+                            for app[idx] in root.apps : Rectangle {
+                                height: 38px;
+                                background: #1c2029;
+                                border-radius: 4px;
+                                HorizontalBox {
+                                    padding: 8px;
+                                    spacing: 16px;
+                                    CheckBox {
+                                        checked: app.selected;
+                                        toggled => { root.toggle_app(idx, self.checked); }
+                                    }
+                                    Text { text: app.name; width: 240px; color: #e6edf3; font-weight: 600; vertical-alignment: center; }
+                                    Text { text: app.id; width: 240px; color: #8b949e; vertical-alignment: center; }
+                                    Text { text: app.category; color: #61afef; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "4. CTT / Winhance Tweaks & Debloat";
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    alignment: start;
+
+                    CheckBox { text: "Unlock & Activate 'Ultimate Performance' Power Plan (Zero Standby/Hibernate)"; checked <=> root.ultimate_perf; }
+                    CheckBox { text: "Strip Provisioned Bloatware Appx Packages (Copilot, Recall, Cortana, Xbox, Bing)"; checked: true; }
+                    CheckBox { text: "Disable Windows Telemetry, DiagTrack, & Consumer Cloud Content (Offline Hive Injection)"; checked <=> root.strip_telemetry; }
+                    CheckBox { text: "Remove OneDrive Setup from Default User Hive"; checked <=> root.strip_onedrive; }
+                    CheckBox { text: "Enable Classic Right-Click Context Menu & Show File Extensions by Default"; checked: true; }
+
+                    Text { text: "Import Chris Titus Tech (CTT WinUtil) Exported JSON Config:"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.ctt_config_path; placeholder-text: "Optional: C:\\Configs\\winutil_export.json"; }
+
+                    Text { text: "Import Winhance Exported Script / Registry Config:"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.winhance_config_path; placeholder-text: "Optional: C:\\Configs\\winhance_tweaks.reg"; }
+                }
+            }
+
+            Tab {
+                title: "5. Unattend & Build ISO";
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    alignment: start;
+
+                    Text { text: "Local Administrator Username (Bypasses Microsoft Account OOBE):"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.username; }
+
+                    Text { text: "Local Account Password (Leave blank for automatic passwordless login):"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.password; input-type: password; }
+
+                    Text { text: "Computer Name (Hostname):"; color: #e6edf3; font-weight: 600; }
+                    LineEdit { text <=> root.hostname; }
+
+                    Button {
+                        text: root.is_building ? "Building Custom ISO..." : "Build Bootable Custom Windows ISO";
+                        enabled: !root.is_building;
+                        height: 44px;
+                        clicked => { root.start_build(); }
+                    }
+                }
+            }
+        }
+
+        // Bottom Status & Progress Footer
+        Rectangle {
+            height: 60px;
+            background: #1c2029;
+            border-radius: 6px;
+            VerticalBox {
+                padding: 10px;
+                spacing: 6px;
+                ProgressIndicator { progress: root.build_progress; height: 8px; }
+                Text { text: root.status_text; color: #98c379; font-size: 12px; }
+            }
+        }
+    }
+}
