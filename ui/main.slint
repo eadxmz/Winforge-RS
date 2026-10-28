@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, LineEdit, CheckBox, ComboBox, ScrollView, ProgressIndicator, TabWidget } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, CheckBox, ComboBox, ScrollView, ProgressIndicator, TabWidget, InputType } from "std-widgets.slint";
 
 export struct UiDriverItem {
     inf_name: string,
@@ -24,7 +24,6 @@ export component MainWindow inherits Window {
     background: #12141a;
     default-font-size: 13px;
 
-    // State Properties
     in-out property <string> iso_path: "C:\\ISOs\\Win11_24H2_LTSC.iso";
     in-out property <string> output_iso_path: "C:\\ISOs\\WinForge_Custom.iso";
     in-out property <[string]> edition_list: ["Index 1: Windows 11 Enterprise LTSC (Build 26100)", "Index 2: Windows 11 IoT Enterprise LTSC (Build 26100)"];
@@ -33,7 +32,6 @@ export component MainWindow inherits Window {
     in-out property <[UiDriverItem]> drivers: [];
     in-out property <[UiAppItem]> apps: [];
 
-    // Unattend & Tweak Properties
     in-out property <string> username: "Abaan";
     in-out property <string> password: "";
     in-out property <string> hostname: "WINFORGE-PC";
@@ -44,12 +42,10 @@ export component MainWindow inherits Window {
     in-out property <string> ctt_config_path: "";
     in-out property <string> winhance_config_path: "";
 
-    // Build Progress
     in-out property <float> build_progress: 0.0;
     in-out property <string> status_text: "Ready. Select a Windows 10, 11, or LTSC ISO to begin.";
     in-out property <bool> is_building: false;
 
-    // Callbacks into Rust
     callback scan_iso(string);
     callback scan_host_drivers();
     callback override_driver_inf(string);
@@ -61,7 +57,6 @@ export component MainWindow inherits Window {
         padding: 16px;
         spacing: 12px;
 
-        // Header Banner
         Rectangle {
             height: 54px;
             background: #1c2029;
@@ -85,7 +80,6 @@ export component MainWindow inherits Window {
             }
         }
 
-        // 5-Step Tabbed Studio
         TabWidget {
             Tab {
                 title: "1. ISO & Edition";
@@ -127,8 +121,8 @@ export component MainWindow inherits Window {
                             text: "Harvest Installed Host Drivers";
                             clicked => { root.scan_host_drivers(); }
                         }
-                        LineEdit {
-                            id: custom-inf-input;
+                        // Corrected Slint syntax using 'custom-inf-input := LineEdit'
+                        custom-inf-input := LineEdit {
                             placeholder-text: "Path to custom/older/newer .inf file (e.g., D:\\Drivers\\AMD\\C038492.inf)...";
                         }
                         Button {
@@ -236,7 +230,8 @@ export component MainWindow inherits Window {
                     LineEdit { text <=> root.username; }
 
                     Text { text: "Local Account Password (Leave blank for automatic passwordless login):"; color: #e6edf3; font-weight: 600; }
-                    LineEdit { text <=> root.password; input-type: password; }
+                    // Corrected InputType enum syntax
+                    LineEdit { text <=> root.password; input-type: InputType.password; }
 
                     Text { text: "Computer Name (Hostname):"; color: #e6edf3; font-weight: 600; }
                     LineEdit { text <=> root.hostname; }
@@ -251,7 +246,6 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Bottom Status & Progress Footer
         Rectangle {
             height: 60px;
             background: #1c2029;
