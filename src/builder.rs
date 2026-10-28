@@ -1,6 +1,7 @@
 use crate::config::{AppItem, BuildReceipt, parse_ctt_export};
 use crate::debloat::{apply_offline_registry_tweaks, strip_provisioned_bloat};
 use crate::drivers::DriverEntry;
+use crate::toolchain::{ToolchainPaths, ensure_toolchain};
 use crate::unattend::{UnattendProfile, generate_autounattend_xml};
 use crate::wim_detect::WimImageInfo;
 use anyhow::{Context, Result, bail};
@@ -20,7 +21,6 @@ struct OfflineAppManifestEntry {
     silent_args: String,
 }
 
-/// RAII Guard: Guarantees DISM mounts and Registry Hives are cleaned up even if the build errors out
 struct WimMountGuard {
     mount_dir: PathBuf,
     committed: bool,
@@ -57,7 +57,6 @@ pub fn execute_build_pipeline(
     let wim_mount_dir = work_dir.join("Mount_Install");
     let boot_mount_dir = work_dir.join("Mount_Boot");
 
-    // Clean up any stale mounts from previous interrupted runs
     let _ = Command::new("dism.exe").args(["/Cleanup-Wim"]).status();
     if work_dir.exists() {
         let _ = fs::remove_dir_all(&work_dir);
@@ -66,22 +65,14 @@ pub fn execute_build_pipeline(
     fs::create_dir_all(&wim_mount_dir)?;
     fs::create_dir_all(&boot_mount_dir)?;
 
+    // STEP 0: Auto-Bootstrap 7-Zip and oscdimg.exe
+    let tools: ToolchainPaths = ensure_toolchain(&progress_tx)?;
+
     // STEP 1: Extract Base ISO
     let _ = progress_tx.send((0.10, "Step 1/7: Extracting base Windows ISO...".into()));
-    let status = Command::new("7z.exe")
-        .args([
-            "x",
-            "-y",
-            &receipt.iso_input_path.to_string_lossy(),
-            &format!("-o{}", iso_extract_dir.display()),
-        ])
-        .status()
-        .context("7z.exe not found in PATH. Install 7-Zip (`winget install 7zip.7zip`).")?;
-    if !status.success() {
-        bail!("Failed to extract ISO image.");
-    }
+    extract_iso_image(&receipt.iso_input_path, &iso_extract_dir, &tools.seven_zip)?;
 
-    // STEP 2: Convert install.esd -> install.wim (or export single target index to shrink ISO size)
+    // STEP 2: Export single target index to install.wim
     let _ = progress_tx.send((
         0.22,
         format!("Step 2/7: Exporting target edition {} (Index {})...", wim_info.name, wim_info.index),
@@ -111,9 +102,9 @@ pub fn execute_build_pipeline(
         fs::remove_file(&wim_path)?;
     }
     fs::rename(&exported_wim, &wim_path)?;
-    let active_wim_index = 1; // Exported WIM now has our target edition at Index 1
+    let active_wim_index = 1;
 
-    // STEP 2.5: Inject Critical Boot/Storage Drivers into boot.wim (Index 2 - Windows Setup PE)
+    // STEP 2.5: Inject Critical Boot/Storage Drivers into boot.wim (Index 2)
     let boot_wim_path = sources_dir.join("boot.wim");
     let boot_critical_drivers: Vec<&DriverEntry> = drivers
         .iter()
@@ -129,7 +120,7 @@ pub fn execute_build_pipeline(
     if !boot_critical_drivers.is_empty() && boot_wim_path.exists() {
         let _ = progress_tx.send((
             0.30,
-            format!("Injecting {} storage/network drivers into boot.wim (WinPE Setup)...", boot_critical_drivers.len()),
+            format!("Injecting {} storage/network drivers into boot.wim...", boot_critical_drivers.len()),
         ));
         let mut boot_guard = WimMountGuard {
             mount_dir: boot_mount_dir.clone(),
@@ -168,7 +159,7 @@ pub fn execute_build_pipeline(
         boot_guard.committed = true;
     }
 
-    // STEP 3: Mount install.wim with transactional guard
+    // STEP 3: Mount install.wim
     let _ = progress_tx.send((0.38, "Step 3/7: Mounting install.wim for offline servicing...".into()));
     let mut install_guard = WimMountGuard {
         mount_dir: wim_mount_dir.clone(),
@@ -187,7 +178,7 @@ pub fn execute_build_pipeline(
         bail!("Failed to mount install.wim.");
     }
 
-    // STEP 4: Inject All Selected Drivers (Host + Custom Overrides) into install.wim
+    // STEP 4: Inject Drivers into install.wim
     let selected_drivers: Vec<&DriverEntry> = drivers.iter().filter(|d| d.selected).collect();
     let _ = progress_tx.send((
         0.52,
@@ -242,9 +233,41 @@ pub fn execute_build_pipeline(
 
     // STEP 7: Master Bootable Hybrid UEFI/BIOS ISO
     let _ = progress_tx.send((0.96, "Step 7/7: Repacking bootable UEFI/BIOS ISO via oscdimg...".into()));
-    build_bootable_iso(&iso_extract_dir, &receipt.iso_output_path)?;
+    build_bootable_iso(&iso_extract_dir, &receipt.iso_output_path, &tools.oscdimg)?;
 
     let _ = progress_tx.send((1.0, format!("Build Complete! Saved to {}", receipt.iso_output_path.display())));
+    Ok(())
+}
+
+fn extract_iso_image(iso_path: &Path, dest_dir: &Path, seven_zip_bin: &Path) -> Result<()> {
+    let tar_status = Command::new("tar.exe")
+        .args([
+            "-xf",
+            &iso_path.to_string_lossy(),
+            "-C",
+            &dest_dir.to_string_lossy(),
+        ])
+        .status();
+
+    if let Ok(s) = tar_status {
+        if s.success() && dest_dir.join("sources").exists() {
+            return Ok(());
+        }
+    }
+
+    let status = Command::new(seven_zip_bin)
+        .args([
+            "x",
+            "-y",
+            &iso_path.to_string_lossy(),
+            &format!("-o{}", dest_dir.display()),
+        ])
+        .status()
+        .context("Failed to execute 7-Zip binary")?;
+
+    if !status.success() {
+        bail!("ISO extraction failed.");
+    }
     Ok(())
 }
 
@@ -263,7 +286,6 @@ fn stage_oem_and_apps(
 
     let mut apps_to_fetch: Vec<AppItem> = apps.iter().filter(|a| a.selected).cloned().collect();
 
-    // Merge apps from exported CTT WinUtil JSON if provided
     if let Some(ctt_path) = &receipt.ctt_json_path {
         if ctt_path.exists() {
             if let Ok(ctt) = parse_ctt_export(ctt_path) {
@@ -281,7 +303,6 @@ fn stage_oem_and_apps(
             }
             fs::copy(ctt_path, configs_dir.join("ctt_export.json"))?;
 
-            // Download raw winutil.ps1 so CTT config executes offline during FirstLogon
             let _ = Command::new("powershell.exe")
                 .args([
                     "-NoProfile",
@@ -295,7 +316,6 @@ fn stage_oem_and_apps(
         }
     }
 
-    // Copy Winhance .reg or .ps1 export if provided
     if let Some(wh_path) = &receipt.winhance_config_path {
         if wh_path.exists() {
             let ext = wh_path.extension().and_then(|s| s.to_str()).unwrap_or("reg");
@@ -304,7 +324,6 @@ fn stage_oem_and_apps(
         }
     }
 
-    // Download each app into its own subfolder and build manifest.json for bootstrap.ps1
     let mut manifest_entries = Vec::new();
     for app in &apps_to_fetch {
         let pkg_sub_dir = apps_dir.join(&app.id);
@@ -355,7 +374,6 @@ fn stage_oem_and_apps(
     let manifest_json = serde_json::to_string_pretty(&manifest_entries)?;
     fs::write(apps_dir.join("manifest.json"), manifest_json)?;
 
-    // Write `ei.cfg` into `sources\ei.cfg` to bypass Product Key prompts on all editions/LTSC
     let ei_cfg = if wim_info.is_ltsc {
         "[Channel]\r\nVolume\r\n[VL]\r\n1\r\n"
     } else {
@@ -363,7 +381,6 @@ fn stage_oem_and_apps(
     };
     fs::write(iso_root.join("sources\\ei.cfg"), ei_cfg)?;
 
-    // Write `autounattend.xml`
     let mut adjusted_wim = wim_info.clone();
     adjusted_wim.index = active_wim_index;
     let profile = UnattendProfile {
@@ -377,7 +394,6 @@ fn stage_oem_and_apps(
     let xml = generate_autounattend_xml(&adjusted_wim, &profile);
     fs::write(iso_root.join("autounattend.xml"), xml)?;
 
-    // Write `bootstrap.ps1`
     fs::write(
         oem_base.join("bootstrap.ps1"),
         include_str!("../assets/scripts/bootstrap.ps1"),
@@ -386,7 +402,7 @@ fn stage_oem_and_apps(
     Ok(())
 }
 
-fn build_bootable_iso(iso_root: &Path, output_iso: &Path) -> Result<()> {
+fn build_bootable_iso(iso_root: &Path, output_iso: &Path, oscdimg_bin: &Path) -> Result<()> {
     let etfsboot = iso_root.join("boot\\etfsboot.com");
     let efisys = iso_root.join("efi\\microsoft\\boot\\efisys.bin");
 
@@ -397,7 +413,7 @@ fn build_bootable_iso(iso_root: &Path, output_iso: &Path) -> Result<()> {
         efisys.display()
     );
 
-    let status = Command::new("oscdimg.exe")
+    let status = Command::new(oscdimg_bin)
         .args([
             "-m",
             "-o",
@@ -408,7 +424,7 @@ fn build_bootable_iso(iso_root: &Path, output_iso: &Path) -> Result<()> {
             &output_iso.to_string_lossy(),
         ])
         .status()
-        .context("Failed to execute oscdimg.exe. Ensure Windows ADK Deployment Tools or oscdimg.exe is in PATH.")?;
+        .context("Failed to execute oscdimg.exe.")?;
 
     if !status.success() {
         bail!("oscdimg.exe returned a non-zero exit code.");
