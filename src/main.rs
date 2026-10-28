@@ -3,6 +3,7 @@ mod builder;
 mod config;
 mod debloat;
 mod drivers;
+mod toolchain;
 mod unattend;
 mod wim_detect;
 
