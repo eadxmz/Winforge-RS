@@ -13,6 +13,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   build-portable-windows:
@@ -28,8 +29,19 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Cargo Registry & Build Artifacts
+      - name: Ensure Cargo.lock Exists for Cache Keying
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "Cargo.lock")) {
+              cargo generate-lockfile
+          }
+
+      - name: Cache Cargo Registry, Index & Compiled Target Dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          save-if: true
 
       - name: Compile WinForge-RS (Release)
         run: cargo build --release --target x86_64-pc-windows-msvc
