@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, LineEdit, CheckBox, ComboBox, ScrollView, ProgressIndicator, TabWidget, InputType } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, CheckBox, ComboBox, ScrollView, ProgressIndicator, TabWidget } from "std-widgets.slint";
 
 export struct UiDriverItem {
     inf_name: string,
@@ -121,7 +121,6 @@ export component MainWindow inherits Window {
                             text: "Harvest Installed Host Drivers";
                             clicked => { root.scan_host_drivers(); }
                         }
-                        // Corrected Slint syntax using 'custom-inf-input := LineEdit'
                         custom-inf-input := LineEdit {
                             placeholder-text: "Path to custom/older/newer .inf file (e.g., D:\\Drivers\\AMD\\C038492.inf)...";
                         }
@@ -230,7 +229,6 @@ export component MainWindow inherits Window {
                     LineEdit { text <=> root.username; }
 
                     Text { text: "Local Account Password (Leave blank for automatic passwordless login):"; color: #e6edf3; font-weight: 600; }
-                    // Corrected InputType enum syntax
                     LineEdit { text <=> root.password; input-type: InputType.password; }
 
                     Text { text: "Computer Name (Hostname):"; color: #e6edf3; font-weight: 600; }
